@@ -1,5 +1,6 @@
 import pytest
 
+from airflow import DAG
 from airflow.providers.microsoft.fabric.hooks.run_item.base import MSFabricRunItemException
 from airflow.providers.microsoft.fabric.hooks.run_item.model import ItemDefinition, RunItemTracker
 from airflow.providers.microsoft.fabric.operators.run_item import (
@@ -34,6 +35,10 @@ class TestMSFabricLivyBatchParameters:
         assert body["pyFiles"] == ["abfss://x/lib.whl"]
         assert body["jars"] == ["abfss://x/lib.jar"]
         assert body["numExecutors"] == 2
+        assert body["executorCores"] == 8
+        assert body["executorMemory"] == "56g"
+        assert body["driverCores"] == 8
+        assert body["driverMemory"] == "56g"
         assert body["conf"]["spark.dynamicAllocation.enabled"] == "false"
 
 
@@ -49,13 +54,64 @@ class TestMSFabricLivyBatchOperator:
         op = MSFabricLivyBatchOperator(
             task_id="t", file="abfss://x/app.py", py_files=["abfss://x/lib.whl"],
             num_executors=3, executor_cores=8, executor_memory="56g",
+            driver_cores=4, driver_memory="28g",
             conf={"spark.dynamicAllocation.enabled": "false"}, **COMMON,
         )
         body = op.build_body()
         assert body["file"] == "abfss://x/app.py"
         assert body["pyFiles"] == ["abfss://x/lib.whl"]
         assert body["numExecutors"] == 3
+        assert body["executorCores"] == 8
+        assert body["executorMemory"] == "56g"
+        assert body["driverCores"] == 4
+        assert body["driverMemory"] == "28g"
+        assert body["conf"] == {"spark.dynamicAllocation.enabled": "false"}
         assert body["name"] == "airflow-fabric-livy-batch"
+
+    def test_resource_fields_are_templated(self):
+        dag = DAG(
+            dag_id="templated_livy_batch",
+            start_date=datetime(2024, 1, 1),
+            schedule=None,
+            render_template_as_native_obj=True,
+        )
+        op = MSFabricLivyBatchOperator(
+            task_id="t",
+            dag=dag,
+            file="abfss://x/app.py",
+            name="{{ params.name }}",
+            files=["{{ params.archive }}"],
+            num_executors="{{ params.executors }}",
+            executor_cores="{{ params.executor_cores }}",
+            executor_memory="{{ params.executor_memory }}",
+            driver_cores="{{ params.driver_cores }}",
+            driver_memory="{{ params.driver_memory }}",
+            conf={"spark.dynamicAllocation.maxExecutors": "{{ params.executors }}"},
+            **COMMON,
+        )
+        op.render_template_fields(
+            {
+                "params": {
+                    "name": "templated-batch",
+                    "archive": "abfss://x/archive.zip",
+                    "executors": 2,
+                    "executor_cores": 8,
+                    "executor_memory": "56g",
+                    "driver_cores": 4,
+                    "driver_memory": "28g",
+                }
+            }
+        )
+
+        body = op.build_body()
+        assert body["name"] == "templated-batch"
+        assert body["files"] == ["abfss://x/archive.zip"]
+        assert body["numExecutors"] == 2
+        assert body["executorCores"] == 8
+        assert body["executorMemory"] == "56g"
+        assert body["driverCores"] == 4
+        assert body["driverMemory"] == "28g"
+        assert body["conf"] == {"spark.dynamicAllocation.maxExecutors": 2}
 
     def test_build_body_from_job_params(self):
         params = MSFabricLivyBatchParameters().set_file("abfss://x/app.py").set_name("jp")
@@ -117,11 +173,59 @@ class TestMSFabricLivySessionOperator:
     def test_session_body_has_no_file(self):
         op = MSFabricLivySessionOperator(
             task_id="t", code="print(1)", num_executors=2, executor_cores=8,
+            executor_memory="56g", driver_cores=4, driver_memory="28g",
             conf={"spark.dynamicAllocation.enabled": "false"}, **COMMON,
         )
         body = op.build_session_body()
         assert body["numExecutors"] == 2
+        assert body["executorCores"] == 8
+        assert body["executorMemory"] == "56g"
+        assert body["driverCores"] == 4
+        assert body["driverMemory"] == "28g"
+        assert body["conf"] == {"spark.dynamicAllocation.enabled": "false"}
         assert "file" not in body
+
+    def test_resource_fields_are_templated(self):
+        dag = DAG(
+            dag_id="templated_livy_session",
+            start_date=datetime(2024, 1, 1),
+            schedule=None,
+            render_template_as_native_obj=True,
+        )
+        op = MSFabricLivySessionOperator(
+            task_id="t",
+            dag=dag,
+            code="print(1)",
+            name="{{ params.name }}",
+            num_executors="{{ params.executors }}",
+            executor_cores="{{ params.executor_cores }}",
+            executor_memory="{{ params.executor_memory }}",
+            driver_cores="{{ params.driver_cores }}",
+            driver_memory="{{ params.driver_memory }}",
+            conf={"spark.executor.instances": "{{ params.executors }}"},
+            **COMMON,
+        )
+        op.render_template_fields(
+            {
+                "params": {
+                    "name": "templated-session",
+                    "executors": 2,
+                    "executor_cores": 8,
+                    "executor_memory": "56g",
+                    "driver_cores": 4,
+                    "driver_memory": "28g",
+                }
+            }
+        )
+
+        body = op.build_session_body()
+        assert body["name"] == "templated-session"
+        assert body["numExecutors"] == 2
+        assert body["executorCores"] == 8
+        assert body["executorMemory"] == "56g"
+        assert body["driverCores"] == 4
+        assert body["driverMemory"] == "28g"
+        assert body["conf"] == {"spark.executor.instances": 2}
 
     def test_session_no_async(self):
         op = MSFabricLivySessionOperator(task_id="t", code="print(1)", **COMMON)

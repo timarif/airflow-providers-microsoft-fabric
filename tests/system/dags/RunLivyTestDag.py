@@ -25,9 +25,12 @@ with DAG(
         lakehouse_id=LAKEHOUSE_ID,
         file=APP,
         py_files=[WHEEL],
-        num_executors=1,
-        executor_cores=8,
-        executor_memory="56g",
+        conf={
+            "spark.dynamicAllocation.enabled": "true",
+            "spark.dynamicAllocation.minExecutors": "1",
+            "spark.dynamicAllocation.maxExecutors": "1",
+            "spark.dynamicAllocation.initialExecutors": "1",
+        },
         timeout=60 * 20,  # 20 minutes
         check_interval=15,
         deferrable=True,
@@ -43,7 +46,10 @@ with DAG(
             MSFabricLivyBatchParameters()
             .set_file(APP)
             .add_py_file(WHEEL)
-            .set_executors(num=1, cores=8, memory="56g")
+            .set_conf("spark.dynamicAllocation.enabled", "true")
+            .set_conf("spark.dynamicAllocation.minExecutors", "1")
+            .set_conf("spark.dynamicAllocation.maxExecutors", "1")
+            .set_conf("spark.dynamicAllocation.initialExecutors", "1")
             .set_name("ci-livy-batch-sync")
             .to_json()
         ),

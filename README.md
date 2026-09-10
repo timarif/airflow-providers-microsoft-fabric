@@ -225,9 +225,12 @@ run_batch = MSFabricLivyBatchOperator(
     lakehouse_id="<lakehouse_id>",
     file="abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>/Files/livy/app.py",
     py_files=["abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>/Files/livy/lib.whl"],
-    num_executors=1,
-    executor_cores=8,
-    executor_memory="56g",
+    conf={
+        "spark.dynamicAllocation.enabled": "true",
+        "spark.dynamicAllocation.minExecutors": "2",
+        "spark.dynamicAllocation.maxExecutors": "2",
+        "spark.dynamicAllocation.initialExecutors": "2",
+    },
     deferrable=True,
 )
 ```
@@ -255,7 +258,10 @@ params = (
     MSFabricLivyBatchParameters()
     .set_file("abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>/Files/livy/app.py")
     .add_py_file("abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>/Files/livy/lib.whl")
-    .set_executors(num=1, cores=8, memory="56g")
+    .set_conf("spark.dynamicAllocation.enabled", "true")
+    .set_conf("spark.dynamicAllocation.minExecutors", "2")
+    .set_conf("spark.dynamicAllocation.maxExecutors", "2")
+    .set_conf("spark.dynamicAllocation.initialExecutors", "2")
 )
 run_batch = MSFabricLivyBatchOperator(
     task_id="run_livy_batch",
@@ -271,17 +277,42 @@ run_batch = MSFabricLivyBatchOperator(
 | `file` | str | — | Absolute `abfss://` path to the Spark application (required unless supplied via `job_params`). |
 | `class_name` | str | `None` | Entry-point class for a JVM/Scala jar (sets Livy `className`). |
 | `py_files` / `jars` / `files` / `args` | list | `[]` | Additional Livy batch resources. |
-| `num_executors` / `executor_cores` / `executor_memory` / `driver_cores` / `driver_memory` | | — | Spark resource sizing. |
+| `num_executors` / `executor_cores` / `executor_memory` / `driver_cores` / `driver_memory` | | — | Apache Livy-compatible resource fields. Fabric batch compute shape is controlled by the workspace pool or a Fabric Environment; current Fabric runtimes can ignore these fields. |
 | `conf` | dict | `{}` | Extra Spark configuration. |
 | `job_params` | str (JSON) | `""` | Prebuilt Livy body (overrides the individual fields). |
 | `timeout` | int | `3600` | Overall timeout in seconds. |
 | `check_interval` | int | `30` | Polling interval in seconds. |
 | `deferrable` | bool | `True` | Poll on the triggerer instead of the worker. |
 
-> **Executor scaling on Fabric batches.** Fabric's Livy **batch** runtime ignores
-> the static executor count (`num_executors` / `spark.executor.instances`) and runs
-> on a **single executor** regardless of the requested value. To actually scale a
-> batch to _N_ executors, enable **dynamic allocation** with min = max = initial = _N_:
+> **Fabric batch compute and executor scaling.** Fabric's Livy **batch** runtime
+> uses the compute shape configured on the workspace's default pool or on a
+> [Fabric Environment](https://learn.microsoft.com/en-us/fabric/data-engineering/environment-manage-compute).
+> Current Fabric runtimes can accept `executor_cores`, `executor_memory`,
+> `driver_cores`, and `driver_memory` in the Livy body while still launching the
+> pool or environment defaults. Setting the corresponding `spark.*` keys in
+> `conf` does not override this compute shape either.
+>
+> To use an Environment, publish its compute settings and reference it in
+> `conf`:
+>
+> ```python
+> import json
+>
+> run_batch = MSFabricLivyBatchOperator(
+>     task_id="run_livy_batch",
+>     fabric_conn_id="fabric_conn_id",
+>     workspace_id="<workspace_id>",
+>     lakehouse_id="<lakehouse_id>",
+>     file="abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>/Files/livy/app.py",
+>     conf={
+>         "spark.fabric.environmentDetails": json.dumps({"id": "<environment_id>"}),
+>     },
+> )
+> ```
+>
+> The static batch executor count (`num_executors` /
+> `spark.executor.instances`) is also not reliable. Request a target through
+> dynamic allocation instead:
 >
 > ```python
 > run_batch = MSFabricLivyBatchOperator(
@@ -299,8 +330,17 @@ run_batch = MSFabricLivyBatchOperator(
 > )
 > ```
 >
+> Dynamic allocation is demand-driven and pool scale-out is asynchronous. The
+> requested minimum, maximum, and initial values are not a guarantee that all
+> executors will be available when a short batch begins processing. Validate
+> effective resources from the Spark runtime for capacity-sensitive workloads.
+>
 > `MSFabricLivySessionOperator` (below) honors the static `num_executors` value
-> directly — this caveat applies to **batches** only.
+> and top-level core and memory fields directly in current Fabric runtimes.
+
+All Livy path, name, resource, and `conf` fields support Airflow templating.
+When templates must produce integers, define the DAG with
+`render_template_as_native_obj=True`.
 
 ### MSFabricLivySessionOperator
 
